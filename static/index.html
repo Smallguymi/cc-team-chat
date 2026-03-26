@@ -1,0 +1,920 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CC Team Chat</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0f1117; color: #e4e4e7; }
+
+/* ── Layout ── */
+#app { display: flex; height: 100vh; }
+
+/* ── Sidebar ── */
+#sidebar {
+  width: 240px; min-width: 240px; background: #13151f;
+  border-right: 1px solid #1e2130; display: flex; flex-direction: column;
+}
+#sidebar-header { padding: 18px 16px 10px; }
+#sidebar-header h1 { font-size: 14px; font-weight: 700; color: #fff; letter-spacing: .3px; }
+#sidebar-header p  { font-size: 11px; color: #444; margin-top: 2px; }
+
+#sidebar-divider { height: 1px; background: #1e2130; margin: 0 12px; }
+
+#participants { flex: 1; overflow-y: auto; padding: 8px 6px; }
+.section-label {
+  font-size: 10px; font-weight: 600; color: #3f3f46; letter-spacing: 1.1px;
+  text-transform: uppercase; padding: 10px 10px 4px;
+}
+
+/* Participant row */
+.participant {
+  display: flex; align-items: center; gap: 9px; padding: 7px 10px;
+  border-radius: 8px; cursor: pointer; transition: background .12s;
+  margin-bottom: 1px; position: relative;
+}
+.participant:hover  { background: #1a1d2e; }
+.participant.active { background: #1e2440; }
+
+.p-avatar {
+  width: 34px; height: 34px; border-radius: 50%; display: flex;
+  align-items: center; justify-content: center; font-size: 13px;
+  font-weight: 700; color: #fff; flex-shrink: 0;
+}
+.p-info { min-width: 0; flex: 1; }
+.p-name {
+  font-size: 13px; font-weight: 500; color: #f4f4f5;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.p-status { font-size: 10px; color: #444; margin-top: 1px; }
+.p-status.busy { color: #f59e0b; }
+.p-status.done { color: #22c55e; }
+
+/* Sidebar buttons */
+#sidebar-footer { padding: 10px 8px 14px; display: flex; flex-direction: column; gap: 6px; }
+.sidebar-btn {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  border-radius: 8px; border: 1px solid #1e2130; background: transparent;
+  color: #555; font-size: 12px; font-weight: 500; cursor: pointer;
+  transition: all .12s; width: 100%;
+}
+.sidebar-btn:hover { background: #1a1d2e; border-color: #2a2d3a; color: #888; }
+.sidebar-btn.primary { border-color: #2d3a6e; color: #6b8af0; }
+.sidebar-btn.primary:hover { background: #1e2440; color: #93a8f4; }
+.sidebar-btn.danger { border-color: #7f1d1d; color: #ef4444; }
+.sidebar-btn.danger:hover { background: #2d0a0a; color: #f87171; }
+
+/* Stop button on participant rows */
+.stop-btn {
+  margin-left: auto; flex-shrink: 0; width: 20px; height: 20px;
+  border-radius: 4px; border: none; background: transparent;
+  color: #3f3f46; cursor: pointer; font-size: 13px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  transition: all .12s; opacity: 0;
+}
+.participant:hover .stop-btn { opacity: 1; }
+.stop-btn:hover { background: #3f0a0a; color: #ef4444; }
+
+/* ── Chat area ── */
+#chat-area { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+#chat-header {
+  padding: 13px 20px; border-bottom: 1px solid #1e2130; background: #0f1117;
+  display: flex; align-items: center; gap: 12px;
+}
+#header-avatar {
+  width: 36px; height: 36px; border-radius: 10px; display: flex;
+  align-items: center; justify-content: center; font-size: 15px; font-weight: 700; color: #fff;
+}
+#header-title { font-size: 14px; font-weight: 600; color: #fff; }
+#header-sub   { font-size: 11px; color: #3f3f46; margin-top: 2px; }
+
+/* ── Messages ── */
+#messages {
+  flex: 1; overflow-y: auto; padding: 20px 24px 14px;
+  display: flex; flex-direction: column; gap: 0; scroll-behavior: smooth;
+}
+
+.msg-group { margin-bottom: 14px; }
+.msg-row { display: flex; align-items: flex-start; gap: 10px; }
+.msg-row.user-row { flex-direction: row-reverse; }
+
+.msg-avatar {
+  width: 30px; height: 30px; border-radius: 50%; display: flex;
+  align-items: center; justify-content: center; font-size: 11px;
+  font-weight: 700; color: #fff; flex-shrink: 0; margin-top: 1px;
+}
+.msg-body { max-width: 74%; display: flex; flex-direction: column; gap: 3px; }
+.user-row .msg-body { align-items: flex-end; }
+
+.msg-meta { font-size: 10px; color: #3f3f46; padding: 0 3px; display: flex; gap: 6px; align-items: center; }
+.msg-meta .name { font-weight: 600; color: #e4e4e7; }
+
+.bubble {
+  padding: 9px 13px; border-radius: 14px 14px 14px 4px;
+  font-size: 13.5px; line-height: 1.6; word-break: break-word;
+  white-space: pre-wrap; background: #1a1d2e; color: #d4d4d8;
+}
+.user-row .bubble {
+  background: #1e3058; color: #bfdbfe; border-radius: 14px 14px 4px 14px;
+}
+.bubble.streaming::after {
+  content: "▋"; animation: blink .65s step-end infinite; color: #3f3f46;
+}
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+.bubble code {
+  background: #0a0c14; padding: 1px 5px; border-radius: 4px;
+  font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px; color: #a78bfa;
+}
+.bubble pre {
+  background: #0a0c14; padding: 10px 13px; border-radius: 8px; margin: 6px 0;
+  overflow-x: auto; font-size: 12px; font-family: "JetBrains Mono", Consolas, monospace;
+  line-height: 1.5; color: #c4b5fd;
+}
+.sys-msg {
+  text-align: center; font-size: 11px; color: #71717a; padding: 3px 0 10px;
+}
+.error-msg {
+  text-align: center; font-size: 12px; color: #ef4444; padding: 6px 12px;
+  background: #1f0a0a; border-radius: 8px; margin: 4px 0;
+}
+
+/* ── Input ── */
+#input-bar {
+  padding: 12px 16px 14px; border-top: 1px solid #1e2130; background: #0f1117;
+}
+#input-row { display: flex; gap: 8px; align-items: flex-end; }
+#msg-input {
+  flex: 1; background: #1a1d2e; border: 1px solid #1e2130; border-radius: 12px;
+  color: #e4e4e7; font-size: 13.5px; padding: 10px 14px; resize: none;
+  min-height: 44px; max-height: 140px; outline: none; transition: border-color .15s;
+  font-family: inherit; line-height: 1.45;
+}
+#msg-input:focus { border-color: #4f46e5; }
+#msg-input::placeholder { color: #333; }
+#send-btn {
+  width: 44px; height: 44px; border-radius: 12px; border: none;
+  background: #4f46e5; color: #fff; cursor: pointer; display: flex;
+  align-items: center; justify-content: center; flex-shrink: 0;
+  transition: background .12s;
+}
+#send-btn:hover { background: #4338ca; }
+#input-hint { font-size: 10px; color: #2a2d3a; text-align: right; margin-top: 5px; }
+
+/* ── API Key modal ── */
+.overlay {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,.75);
+  align-items: center; justify-content: center; z-index: 200;
+}
+.overlay.open { display: flex; }
+.modal {
+  background: #13151f; border: 1px solid #1e2130; border-radius: 16px;
+  padding: 28px; width: 420px; max-width: 94vw; display: flex;
+  flex-direction: column; gap: 16px;
+}
+.modal h3 { font-size: 15px; font-weight: 700; color: #fff; }
+.modal p  { font-size: 12px; color: #555; line-height: 1.6; }
+.modal label { font-size: 11px; color: #555; display: block; margin-bottom: 5px; }
+.modal input, .modal textarea {
+  width: 100%; background: #0a0c14; border: 1px solid #1e2130; border-radius: 8px;
+  color: #e4e4e7; font-size: 13px; padding: 9px 12px; outline: none; font-family: inherit;
+  transition: border-color .15s;
+}
+.modal textarea { min-height: 90px; resize: vertical; line-height: 1.5; }
+.modal input:focus, .modal textarea:focus { border-color: #4f46e5; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.btn-secondary {
+  padding: 8px 16px; border-radius: 8px; border: 1px solid #1e2130;
+  background: transparent; color: #555; font-size: 13px; cursor: pointer;
+}
+.btn-primary {
+  padding: 8px 18px; border-radius: 8px; border: none;
+  background: #4f46e5; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.btn-primary:hover { background: #4338ca; }
+
+/* Provider tabs */
+.ptab {
+  padding: 5px 11px; border-radius: 6px; border: 1px solid #1e2130;
+  background: transparent; color: #555; font-size: 12px; cursor: pointer;
+  transition: all .12s;
+}
+.ptab:hover  { background: #1a1d2e; color: #888; }
+.ptab.active { background: #1e2440; border-color: #3b4a8a; color: #93a8f4; font-weight: 600; }
+
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #1e2130; border-radius: 4px; }
+
+/* Permission card */
+.perm-card {
+  border: 1px solid #2d3a6e; border-radius: 12px; background: #0d1020;
+  padding: 14px 16px; margin: 6px 0; display: flex; flex-direction: column; gap: 10px;
+}
+.perm-card-header { font-size: 11px; font-weight: 700; color: #6b8af0; letter-spacing: .6px; text-transform: uppercase; }
+.perm-card-body { font-size: 12.5px; color: #a1a1aa; line-height: 1.55; white-space: pre-wrap; word-break: break-word; max-height: 140px; overflow-y: auto; }
+.perm-btns { display: flex; gap: 7px; flex-wrap: wrap; }
+.perm-btn {
+  padding: 6px 14px; border-radius: 7px; border: 1px solid; font-size: 12px;
+  font-weight: 600; cursor: pointer; transition: all .12s;
+}
+.perm-btn.yes  { border-color: #166534; background: #052e16; color: #4ade80; }
+.perm-btn.yes:hover  { background: #14532d; }
+.perm-btn.no   { border-color: #7f1d1d; background: #2d0a0a; color: #f87171; }
+.perm-btn.no:hover   { background: #450a0a; }
+.perm-btn.ask  { border-color: #1e2130; background: transparent; color: #818cf8; }
+.perm-btn.ask:hover  { background: #1e2440; }
+.perm-input-row { display:none; gap:6px; margin-top:2px; }
+.perm-input-row.open { display:flex; }
+.perm-input-row input {
+  flex:1; background:#0a0c14; border:1px solid #1e2130; border-radius:7px;
+  color:#e4e4e7; font-size:12px; padding:7px 10px; outline:none; font-family:inherit;
+}
+.perm-input-row input:focus { border-color:#4f46e5; }
+.perm-input-row button {
+  padding:7px 12px; border-radius:7px; border:none; background:#4f46e5;
+  color:#fff; font-size:12px; cursor:pointer;
+}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ── Sidebar ── -->
+  <nav id="sidebar">
+    <div id="sidebar-header">
+      <h1>CC Team Chat</h1>
+      <p>Multi-agent workspace</p>
+    </div>
+    <div id="sidebar-divider"></div>
+
+    <div id="participants">
+      <div class="section-label">Agents</div>
+
+      <!-- Manager (always present) -->
+      <div class="participant active" id="p-manager" onclick="selectTarget('manager')">
+        <div class="p-avatar" style="background:#9B59B6">M</div>
+        <div class="p-info">
+          <div class="p-name">Manager CC</div>
+          <div class="p-status" id="st-manager">ready</div>
+        </div>
+        <button class="stop-btn" onclick="stopAgent(event,'manager')" title="Stop">■</button>
+      </div>
+
+      <!-- Workers injected here -->
+      <div id="worker-list"></div>
+    </div>
+
+    <div id="sidebar-footer">
+      <button class="sidebar-btn primary" onclick="openSpawnModal()">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Add Worker CC
+      </button>
+      <button class="sidebar-btn danger" onclick="stopAll()">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+        Emergency Stop All
+      </button>
+      <button class="sidebar-btn" onclick="openKeyModal()" style="border-color:#4f46e5;color:#818cf8;">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="15" r="4"/><path d="M12 11l8-8m-3 0l3 3-2 2-3-3"/></svg>
+        <span id="settings-label">Settings</span>
+      </button>
+      <button class="sidebar-btn" onclick="exitApp()" style="border-color:#44403c;color:#78716c;">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        Exit CC Team Chat
+      </button>
+    </div>
+  </nav>
+
+  <!-- ── Chat ── -->
+  <main id="chat-area">
+    <div id="chat-header">
+      <div id="header-avatar" style="background:#9B59B6">M</div>
+      <div>
+        <div id="header-title">Manager CC</div>
+        <div id="header-sub">Orchestrator · reads CLAUDE.md · spawns workers</div>
+      </div>
+    </div>
+
+    <div id="messages"></div>
+
+    <div id="input-bar">
+      <div id="input-row">
+        <textarea id="msg-input" placeholder="Message Manager CC…" rows="1"
+          onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+        <button id="send-btn" onclick="sendMessage()" title="Send (Enter)">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+            <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+          </svg>
+        </button>
+      </div>
+      <div id="input-hint">Enter to send · Shift+Enter for new line</div>
+    </div>
+  </main>
+</div>
+
+<!-- ── Settings modal ── -->
+<div class="overlay" id="key-overlay">
+  <div class="modal" style="width:500px">
+    <h3>LLM Provider Settings</h3>
+    <p>Keys are stored in your browser only and sent to your local server. Never stored server-side.</p>
+
+    <!-- Provider tabs -->
+    <div id="provider-tabs" style="display:flex;gap:6px;flex-wrap:wrap">
+      <button class="ptab" data-p="claude_cli" onclick="selectProvider('claude_cli')" style="border-color:#22c55e;color:#22c55e">Claude CLI ✓</button>
+      <button class="ptab" data-p="anthropic"  onclick="selectProvider('anthropic')">Claude API</button>
+      <button class="ptab" data-p="gemini"     onclick="selectProvider('gemini')">Gemini</button>
+      <button class="ptab" data-p="bailian"    onclick="selectProvider('bailian')">百炼</button>
+      <button class="ptab" data-p="openai"     onclick="selectProvider('openai')">OpenAI</button>
+      <button class="ptab" data-p="deepseek"   onclick="selectProvider('deepseek')">DeepSeek</button>
+      <button class="ptab" data-p="custom"     onclick="selectProvider('custom')">Custom</button>
+    </div>
+
+    <div id="key-row">
+      <label>API Key</label>
+      <input id="key-input" type="password" placeholder="Paste your key here…" />
+    </div>
+    <div id="cli-note" style="display:none;font-size:12px;color:#22c55e;background:#0a1a0a;border:1px solid #1a3a1a;border-radius:8px;padding:10px 12px">
+      No API key needed — uses your local <strong>Claude Code</strong> Pro subscription.
+    </div>
+
+    <div>
+      <label>Model</label>
+      <div style="display:flex;gap:6px">
+        <select id="model-select" style="flex:1;background:#0a0c14;border:1px solid #1e2130;border-radius:8px;color:#e4e4e7;padding:8px 10px;font-size:13px;outline:none"></select>
+        <input id="model-custom" placeholder="or type model name" style="flex:1" />
+      </div>
+    </div>
+
+    <!-- Base URL (hidden for non-custom providers with fixed URLs) -->
+    <div id="base-url-row">
+      <label>Base URL</label>
+      <input id="base-url-input" placeholder="https://…" />
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeKeyModal()">Cancel</button>
+      <button class="btn-primary" onclick="saveSettings()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Spawn Worker modal ── -->
+<div class="overlay" id="spawn-overlay">
+  <div class="modal">
+    <h3>Spawn Worker CC</h3>
+    <div>
+      <label>Task title</label>
+      <input id="spawn-title" placeholder="e.g. Write readers/image.py" />
+    </div>
+    <div>
+      <label>Task brief — include all context the worker will need</label>
+      <textarea id="spawn-brief" placeholder="Workers have NO other context. Be complete."></textarea>
+    </div>
+    <div>
+      <label>Permission mode</label>
+      <div style="display:flex;gap:8px;margin-top:6px">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:#e4e4e7">
+          <input type="radio" name="perm-mode" value="ask" checked style="accent-color:#4f46e5"> Ask before completing
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:#e4e4e7">
+          <input type="radio" name="perm-mode" value="full" style="accent-color:#22c55e"> Full permission
+        </label>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeSpawnModal()">Cancel</button>
+      <button class="btn-primary" onclick="doSpawn()">Spawn Worker</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Provider definitions ───────────────────────────────────────────────────
+const PROVIDERS = {
+  claude_cli: {
+    name: "Claude Code (CLI)", sdk: "claude_cli", base_url: "",
+    models: ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"],
+    no_key: true,
+  },
+  anthropic: {
+    name: "Claude (API)", sdk: "anthropic", base_url: "",
+    models: ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"],
+  },
+  gemini: {
+    name: "Gemini (Google)", sdk: "openai_compat",
+    base_url: "https://generativelanguage.googleapis.com/v1beta/openai/",
+    models: ["gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"],
+  },
+  bailian: {
+    name: "百炼 (Alibaba)", sdk: "openai_compat",
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    models: ["qwen-max", "qwen-plus", "qwen-turbo", "qwen-long"],
+  },
+  openai: {
+    name: "OpenAI", sdk: "openai_compat", base_url: "",
+    models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"],
+  },
+  deepseek: {
+    name: "DeepSeek", sdk: "openai_compat",
+    base_url: "https://api.deepseek.com",
+    models: ["deepseek-chat", "deepseek-reasoner"],
+  },
+  custom: {
+    name: "Custom", sdk: "openai_compat", base_url: "",
+    models: [],
+  },
+};
+
+// ── State ──────────────────────────────────────────────────────────────────
+const MANAGER_COLOR = "#9B59B6";
+const workers = {};
+let currentTarget = "manager";
+let streamBufs = {};
+let ws;
+
+// Load saved settings
+let settings = JSON.parse(localStorage.getItem("cc_settings") || "{}");
+if (!settings.provider_id) settings.provider_id = "claude_cli";
+if (!settings.api_key)     settings.api_key     = "";
+if (!settings.model)       settings.model       = "claude-opus-4-6";
+if (!settings.base_url)    settings.base_url    = "";
+
+function getProviderCfg() {
+  const p = PROVIDERS[settings.provider_id] || PROVIDERS.custom;
+  return {
+    provider: p.sdk,
+    api_key:  settings.api_key,
+    model:    settings.model,
+    base_url: settings.base_url || p.base_url,
+  };
+}
+
+let selectedProviderId = settings.provider_id;
+
+// ── Thread management ──────────────────────────────────────────────────────
+function getThreadEl(targetId) {
+  let el = document.getElementById(`thread-${targetId}`);
+  if (!el) {
+    el = document.createElement("div");
+    el.id = `thread-${targetId}`;
+    el.className = "thread";
+    el.style.display = "none";
+    document.getElementById("messages").appendChild(el);
+  }
+  return el;
+}
+
+function showThread(targetId) {
+  document.querySelectorAll(".thread").forEach(t => t.style.display = "none");
+  getThreadEl(targetId).style.display = "";
+  scrollBottom();
+}
+
+// ── Boot ───────────────────────────────────────────────────────────────────
+window.addEventListener("load", () => {
+  showThread("manager");
+  sysMsg("Team chat started — select a participant and send a message");
+  updateSettingsBtn();
+  if (!settings.api_key) openKeyModal();
+  connect();
+});
+
+// ── WebSocket ──────────────────────────────────────────────────────────────
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen  = () => sysMsg("Connected");
+  ws.onclose = () => { sysMsg("Connection lost — reconnecting…"); setTimeout(connect, 3000); };
+  ws.onmessage = e => handle(JSON.parse(e.data));
+}
+
+function handle(m) {
+  switch (m.type) {
+
+    case "init":
+      (m.workers || []).forEach(addWorker);
+      break;
+
+    case "message":
+      flushStream(m.sender);
+      appendMsg(m.sender, m.sender_label || labelOf(m.sender), m.content, m.sender === "user");
+      setStatus(m.sender, "ready");
+      break;
+
+    case "stream_delta":
+      pushStream(m.sender, m.content);
+      break;
+
+    case "stream_end":
+      flushStream(m.sender);
+      setStatus(m.sender, "ready");
+      break;
+
+    case "worker_spawned":
+      addWorker(m);
+      sysMsg(`Worker spawned — "${m.task_title}"`);
+      setStatus(m.worker_id, "working…");
+      break;
+
+    case "worker_complete":
+      sysMsg(`✓ ${m.worker_id} finished: "${m.task_title}"`);
+      setStatus(m.worker_id, "done");
+      break;
+
+    case "permission_request":
+      showPermissionCard(m);
+      setStatus(m.worker_id, "waiting…");
+      break;
+
+    case "agent_stopped":
+      flushStream(m.worker_id);
+      setStatus(m.worker_id, "stopped");
+      sysMsg(`⏹ ${labelOf(m.worker_id)} stopped`);
+      break;
+
+    case "all_stopped":
+      Object.keys(streamBufs).forEach(s => flushStream(s));
+      sysMsg("⏹ All agents stopped");
+      document.querySelectorAll(".p-status").forEach(el => {
+        if (el.textContent === "typing…" || el.textContent === "working…")
+          el.textContent = "stopped";
+      });
+      break;
+
+    case "error":
+      errMsg(m.message);
+      break;
+  }
+}
+
+// ── Streaming ──────────────────────────────────────────────────────────────
+function pushStream(sender, delta) {
+  if (!streamBufs[sender]) {
+    const { bubble } = appendMsg(sender, labelOf(sender), "", false, true);
+    streamBufs[sender] = { el: bubble, text: "" };
+  }
+  streamBufs[sender].text += delta;
+  streamBufs[sender].el.textContent = streamBufs[sender].text;
+  streamBufs[sender].el.classList.add("streaming");
+  setStatus(sender, "typing…");
+  scrollBottom();
+}
+
+function flushStream(sender) {
+  if (!streamBufs[sender]) return;
+  const { el, text } = streamBufs[sender];
+  el.classList.remove("streaming");
+  el.innerHTML = md(text);
+  delete streamBufs[sender];
+  scrollBottom();
+}
+
+// ── DOM helpers ────────────────────────────────────────────────────────────
+function appendMsg(sender, label, content, isUser, streaming = false) {
+  const wrap = getThreadEl(isUser ? currentTarget : sender);
+  const grp  = document.createElement("div");
+  grp.className = "msg-group";
+
+  const row = document.createElement("div");
+  row.className = "msg-row" + (isUser ? " user-row" : "");
+
+  const av = document.createElement("div");
+  av.className = "msg-avatar";
+  av.style.background = colorOf(sender);
+  av.textContent = label[0].toUpperCase();
+
+  const body = document.createElement("div");
+  body.className = "msg-body";
+
+  const meta = document.createElement("div");
+  meta.className = "msg-meta";
+  const nameEl = document.createElement("span");
+  nameEl.className = "name";
+  nameEl.textContent = label;
+  const timeEl = document.createElement("span");
+  timeEl.textContent = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  isUser ? meta.append(timeEl, nameEl) : meta.append(nameEl, timeEl);
+
+  const bubble = document.createElement("div");
+  bubble.className = "bubble" + (streaming ? " streaming" : "");
+  if (content) bubble.innerHTML = md(content);
+
+  body.append(meta, bubble);
+  isUser ? row.append(body, av) : row.append(av, body);
+  grp.appendChild(row);
+  wrap.appendChild(grp);
+  scrollBottom();
+  return { grp, bubble };
+}
+
+function sysMsg(t) {
+  const el = document.createElement("div");
+  el.className = "sys-msg";
+  el.textContent = t;
+  getThreadEl(currentTarget).appendChild(el);
+  scrollBottom();
+}
+
+function errMsg(t) {
+  const el = document.createElement("div");
+  el.className = "error-msg";
+  el.textContent = "⚠ " + t;
+  getThreadEl(currentTarget).appendChild(el);
+  scrollBottom();
+}
+
+function scrollBottom() {
+  const c = document.getElementById("messages");
+  c.scrollTop = c.scrollHeight;
+}
+
+// ── Sidebar ────────────────────────────────────────────────────────────────
+function addWorker(w) {
+  workers[w.worker_id] = w;
+  getThreadEl(w.worker_id);  // create thread (hidden until selected)
+
+  const list = document.getElementById("worker-list");
+  const el   = document.createElement("div");
+  el.className  = "participant";
+  el.id         = `p-${w.worker_id}`;
+  el.onclick    = () => selectTarget(w.worker_id);
+
+  const shortTitle = (w.label || w.task_title || w.worker_id);
+  const modeLabel = w.permission_mode === "full" ? "🔓" : "🔐";
+  el.innerHTML = `
+    <div class="p-avatar" style="background:${w.color}">${w.worker_id.replace("worker_","")}</div>
+    <div class="p-info">
+      <div class="p-name" title="${w.task_title || ""}">${shortTitle}</div>
+      <div class="p-status" id="st-${w.worker_id}">spawning…</div>
+    </div>
+    <span title="${w.permission_mode === 'full' ? 'Full permission' : 'Ask before completing'}" style="font-size:12px;margin-right:2px">${modeLabel}</span>
+    <button class="stop-btn" onclick="stopAgent(event,'${w.worker_id}')" title="Stop">■</button>`;
+  list.appendChild(el);
+}
+
+function setStatus(sender, status) {
+  const el = document.getElementById(`st-${sender}`);
+  if (!el) return;
+  el.textContent = status;
+  el.className = "p-status" +
+    (status.includes("typing") || status.includes("working") ? " busy" : "") +
+    (status === "done" ? " done" : "");
+}
+
+// ── Target switching (sidebar click) ──────────────────────────────────────
+function selectTarget(id) {
+  currentTarget = id;
+  showThread(id);
+
+  // Highlight sidebar row
+  document.querySelectorAll(".participant").forEach(p => p.classList.remove("active"));
+  const row = document.getElementById(`p-${id}`);
+  if (row) row.classList.add("active");
+
+  // Update header
+  const label = labelOf(id);
+  const color = colorOf(id);
+  document.getElementById("header-title").textContent = label;
+  document.getElementById("header-avatar").style.background = color;
+  document.getElementById("header-avatar").textContent = label[0].toUpperCase();
+
+  const sub = id === "manager"
+    ? "Orchestrator · reads CLAUDE.md · spawns workers"
+    : `Worker · ${workers[id]?.task_title || ""}`;
+  document.getElementById("header-sub").textContent = sub;
+
+  document.getElementById("msg-input").placeholder = `Message ${label}…`;
+  document.getElementById("msg-input").focus();
+}
+
+// ── Send ───────────────────────────────────────────────────────────────────
+function sendMessage() {
+  const input   = document.getElementById("msg-input");
+  const content = input.value.trim();
+  if (!content || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+  if (!settings.api_key) { openKeyModal(); return; }
+
+  const type = currentTarget === "manager" ? "user_message" : "worker_message";
+  const payload = { type, content, provider: getProviderCfg() };
+  if (currentTarget !== "manager") payload.worker_id = currentTarget;
+  ws.send(JSON.stringify(payload));
+
+  input.value = "";
+  input.style.height = "44px";
+}
+
+function handleKey(e) {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+}
+
+function autoResize(el) {
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, 140) + "px";
+}
+
+// ── Settings modal ─────────────────────────────────────────────────────────
+function openKeyModal() {
+  selectedProviderId = settings.provider_id;
+  document.getElementById("key-input").value    = settings.api_key;
+  document.getElementById("model-custom").value = "";
+  renderProviderTabs();
+  populateModels();
+  document.getElementById("key-overlay").classList.add("open");
+  setTimeout(() => document.getElementById("key-input").focus(), 50);
+}
+function closeKeyModal() { document.getElementById("key-overlay").classList.remove("open"); }
+
+function selectProvider(id) {
+  selectedProviderId = id;
+  renderProviderTabs();
+  populateModels();
+}
+
+function renderProviderTabs() {
+  document.querySelectorAll(".ptab").forEach(b => {
+    b.classList.toggle("active", b.dataset.p === selectedProviderId);
+  });
+  const p = PROVIDERS[selectedProviderId];
+  const urlRow  = document.getElementById("base-url-row");
+  const urlInput = document.getElementById("base-url-input");
+  const keyRow  = document.getElementById("key-row");
+  const cliNote = document.getElementById("cli-note");
+
+  // Show/hide API key vs CLI note
+  const isCLI = !!p.no_key;
+  keyRow.style.display  = isCLI ? "none" : "";
+  cliNote.style.display = isCLI ? "" : "none";
+
+  // Show base URL row only for custom
+  urlRow.style.display = selectedProviderId === "custom" ? "" : "none";
+  urlInput.value = p.base_url;
+}
+
+function populateModels() {
+  const p = PROVIDERS[selectedProviderId];
+  const sel = document.getElementById("model-select");
+  sel.innerHTML = p.models.map(m => `<option value="${m}">${m}</option>`).join("");
+  // Restore saved model if it matches this provider
+  if (p.models.includes(settings.model)) sel.value = settings.model;
+}
+
+function saveSettings() {
+  const p   = PROVIDERS[selectedProviderId];
+  const key = p.no_key ? "cli" : document.getElementById("key-input").value.trim();
+  if (!key) { alert("Please enter an API key."); return; }
+
+  const selModel  = document.getElementById("model-select").value;
+  const custModel = document.getElementById("model-custom").value.trim();
+  const model = custModel || selModel || (p.models[0] || "");
+
+  settings = {
+    provider_id: selectedProviderId,
+    api_key: key,
+    model,
+    base_url: selectedProviderId === "custom"
+      ? document.getElementById("base-url-input").value.trim()
+      : p.base_url,
+  };
+  localStorage.setItem("cc_settings", JSON.stringify(settings));
+
+  closeKeyModal();
+  const label = p.name + " / " + model;
+  sysMsg(`Provider set: ${label}`);
+  updateSettingsBtn();
+}
+
+function updateSettingsBtn() {
+  if (!settings.api_key) return;
+  const p = PROVIDERS[settings.provider_id] || {};
+  document.getElementById("settings-label").textContent =
+    (p.name || settings.provider_id) + " · " + settings.model;
+}
+
+// ── Exit ───────────────────────────────────────────────────────────────────
+async function exitApp() {
+  if (!confirm("Shut down CC Team Chat server?")) return;
+  try {
+    await fetch("/shutdown", { method: "POST" });
+  } catch (_) {}
+  document.body.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:center;height:100vh;
+      background:#0f1117;color:#71717a;font-family:sans-serif;flex-direction:column;gap:12px">
+      <div style="font-size:18px;color:#e4e4e7">CC Team Chat stopped</div>
+      <div style="font-size:13px">Close this tab. Run start.bat to restart.</div>
+    </div>`;
+}
+
+// ── Stop controls ──────────────────────────────────────────────────────────
+function stopAgent(e, wid) {
+  e.stopPropagation();
+  if (ws && ws.readyState === WebSocket.OPEN)
+    ws.send(JSON.stringify({ type: "stop_worker", worker_id: wid }));
+}
+
+function stopAll() {
+  if (ws && ws.readyState === WebSocket.OPEN)
+    ws.send(JSON.stringify({ type: "stop_all" }));
+}
+
+// ── Spawn modal ────────────────────────────────────────────────────────────
+function openSpawnModal() {
+  document.getElementById("spawn-overlay").classList.add("open");
+  setTimeout(() => document.getElementById("spawn-title").focus(), 50);
+}
+function closeSpawnModal() {
+  document.getElementById("spawn-overlay").classList.remove("open");
+  document.getElementById("spawn-title").value = "";
+  document.getElementById("spawn-brief").value = "";
+}
+function doSpawn() {
+  const title = document.getElementById("spawn-title").value.trim();
+  const brief = document.getElementById("spawn-brief").value.trim();
+  if (!title || !brief) { alert("Fill in both fields."); return; }
+  if (!settings.api_key) { closeSpawnModal(); openKeyModal(); return; }
+  const permMode = document.querySelector('input[name="perm-mode"]:checked')?.value || "ask";
+  ws.send(JSON.stringify({
+    type: "spawn_worker",
+    task_id: "manual_" + Date.now(),
+    task_title: title,
+    task_brief: brief,
+    permission_mode: permMode,
+    provider: getProviderCfg(),
+  }));
+  closeSpawnModal();
+}
+
+function showPermissionCard(m) {
+  const thread = getThreadEl(m.worker_id);
+  const card = document.createElement("div");
+  card.className = "perm-card";
+  card.id = `perm-${m.worker_id}`;
+  card.innerHTML = `
+    <div class="perm-card-header">⏸ Waiting for approval — ${m.task_title}</div>
+    <div class="perm-card-body">${md(m.summary || "")}</div>
+    <div class="perm-btns">
+      <button class="perm-btn yes"  onclick="answerPerm('${m.worker_id}','yes')">✅ Yes, complete</button>
+      <button class="perm-btn no"   onclick="answerPerm('${m.worker_id}','no')">❌ No, cancel</button>
+      <button class="perm-btn ask"  onclick="togglePermInput('${m.worker_id}')">💬 Tell me what to do</button>
+    </div>
+    <div class="perm-input-row" id="perm-input-${m.worker_id}">
+      <input id="perm-text-${m.worker_id}" placeholder="Type an instruction for the worker…"
+        onkeydown="if(event.key==='Enter')sendPermInstruction('${m.worker_id}')"/>
+      <button onclick="sendPermInstruction('${m.worker_id}')">Send</button>
+    </div>`;
+  thread.appendChild(card);
+  // Switch to this worker's thread so user sees the card
+  selectTarget(m.worker_id);
+  scrollBottom();
+}
+
+function togglePermInput(wid) {
+  const row = document.getElementById(`perm-input-${wid}`);
+  row.classList.toggle("open");
+  if (row.classList.contains("open"))
+    document.getElementById(`perm-text-${wid}`).focus();
+}
+
+function answerPerm(wid, answer) {
+  document.getElementById(`perm-${wid}`)?.remove();
+  ws.send(JSON.stringify({ type: "permission_response", worker_id: wid, answer }));
+  setStatus(wid, answer === "yes" ? "completing…" : "cancelled");
+}
+
+function sendPermInstruction(wid) {
+  const input = document.getElementById(`perm-text-${wid}`);
+  const text  = input.value.trim();
+  if (!text) return;
+  // Send as a worker message (worker will process it) then dismiss the card
+  ws.send(JSON.stringify({ type: "worker_message", worker_id: wid, content: text, provider: getProviderCfg() }));
+  // Also resolve permission as "yes" so the task completes after the instruction
+  answerPerm(wid, "yes");
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function labelOf(id) {
+  if (id === "user")    return "You";
+  if (id === "manager") return "Manager CC";
+  return workers[id]?.label || id;
+}
+function colorOf(id) {
+  if (id === "user")    return "#2563eb";
+  if (id === "manager") return MANAGER_COLOR;
+  return workers[id]?.color || "#555";
+}
+
+// Minimal markdown renderer
+function md(text) {
+  return text
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    .replace(/```[\w]*\n?([\s\S]*?)```/g, (_,c) => `<pre><code>${c.trim()}</code></pre>`)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.*?)\*/g, "<em>$1</em>")
+    .replace(/^#{1,3} (.+)$/gm, "<strong>$1</strong>")
+    .replace(/\n/g, "<br>");
+}
+</script>
+</body>
+</html>
