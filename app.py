@@ -15,6 +15,8 @@ import datetime
 import json
 import os
 import re
+import string
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -318,6 +320,32 @@ async def delete_room(room_id: str):
     if room:
         room.cancel_all()
     return {"status": "deleted"}
+
+
+@app.get("/api/browse")
+async def browse_dirs(path: str = ""):
+    """Return subdirectories at `path`. Empty path returns drive roots (Windows) or /."""
+    if not path:
+        if sys.platform == "win32":
+            drives = [f"{d}:\\" for d in string.ascii_uppercase if Path(f"{d}:\\").exists()]
+            return {"path": "", "label": "Drives", "parent": None, "dirs": drives}
+        else:
+            p = Path("/")
+            dirs = sorted(str(d) for d in p.iterdir() if d.is_dir())
+            return {"path": "/", "label": "/", "parent": None, "dirs": dirs}
+
+    p = Path(path)
+    try:
+        dirs = sorted(
+            str(d) for d in p.iterdir()
+            if d.is_dir() and not d.name.startswith(".")
+        )
+        parent = None if p.parent == p else str(p.parent)
+        return {"path": str(p), "label": str(p), "parent": parent, "dirs": dirs}
+    except PermissionError:
+        return {"path": str(p), "label": str(p), "parent": str(p.parent), "dirs": [], "error": "Permission denied"}
+    except Exception as e:
+        return {"path": str(p), "label": str(p), "parent": str(p.parent), "dirs": [], "error": str(e)}
 
 
 @app.get("/api/species")

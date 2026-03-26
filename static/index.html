@@ -65,6 +65,12 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
 .sidebar-btn.danger { border-color: #7f1d1d; color: #ef4444; }
 .sidebar-btn.danger:hover { background: #2d0a0a; color: #f87171; }
 
+/* Browse modal */
+.browse-list { max-height: 280px; overflow-y: auto; border: 1px solid #3f3f46; border-radius: 6px; padding: 4px; margin-top: 6px; }
+.browse-item { padding: 6px 10px; border-radius: 5px; cursor: pointer; font-size: 12px; color: #a1a1aa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.browse-item:hover { background: #1e2440; color: #e4e4e7; }
+.browse-crumb { font-size: 11px; color: #52525b; margin-top: 4px; word-break: break-all; min-height: 16px; }
+
 /* Room list */
 #rooms-section { padding: 2px 6px 4px; }
 .room-item {
@@ -436,11 +442,27 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
     </div>
     <div style="margin-top:10px">
       <label>Project folder <span style="color:#52525b">(optional — blank = auto-create)</span></label>
-      <input id="room-path-input" placeholder="e.g. C:\projects\trading_bot" />
+      <div style="display:flex;gap:6px;margin-top:6px">
+        <input id="room-path-input" placeholder="e.g. C:\projects\trading_bot" style="flex:1" />
+        <button class="btn-secondary" onclick="openBrowseModal()" style="white-space:nowrap;flex-shrink:0">Browse…</button>
+      </div>
     </div>
     <div class="modal-actions">
       <button class="btn-secondary" onclick="closeNewRoomModal()">Cancel</button>
       <button class="btn-primary" onclick="doCreateRoom()">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Folder browser modal ── -->
+<div class="overlay" id="browse-overlay">
+  <div class="modal" style="width:460px">
+    <h3>Select Project Folder</h3>
+    <div class="browse-crumb" id="browse-crumb">Loading…</div>
+    <div class="browse-list" id="browse-list"></div>
+    <div class="modal-actions" style="margin-top:10px">
+      <button class="btn-secondary" onclick="closeBrowseModal()">Cancel</button>
+      <button class="btn-primary" onclick="confirmBrowse()">Use This Folder</button>
     </div>
   </div>
 </div>
@@ -542,7 +564,8 @@ window.addEventListener("load", () => {
 async function loadRooms() {
   try {
     const resp = await fetch("/api/rooms");
-    roomsList  = await resp.json();
+    const data = await resp.json();
+    roomsList  = Array.isArray(data) ? data : [];   // guard: always an array
     renderRooms();
     if (roomsList.length > 0) switchRoom(roomsList[0].room_id, true);
   } catch(e) { console.error("loadRooms failed", e); }
@@ -610,10 +633,52 @@ async function doCreateRoom() {
       body: JSON.stringify({ name, path }),
     });
     const room = await resp.json();
+    if (!room || !room.room_id) throw new Error("Server returned unexpected response");
+    if (!Array.isArray(roomsList)) roomsList = [];
     roomsList.push(room);
     closeNewRoomModal();
     switchRoom(room.room_id);
   } catch(e) { alert("Failed to create room: " + e); }
+}
+
+// ── Folder browser ──────────────────────────────────────────────────────────
+let _browsePath = "";
+
+function openBrowseModal() {
+  document.getElementById("browse-overlay").classList.add("open");
+  browseTo("");
+}
+function closeBrowseModal() {
+  document.getElementById("browse-overlay").classList.remove("open");
+}
+function confirmBrowse() {
+  if (_browsePath) document.getElementById("room-path-input").value = _browsePath;
+  closeBrowseModal();
+}
+
+async function browseTo(path) {
+  _browsePath = path;
+  document.getElementById("browse-crumb").textContent = path || "(select a drive)";
+  document.getElementById("browse-list").innerHTML = '<div class="browse-item" style="color:#52525b">Loading…</div>';
+  try {
+    const resp = await fetch("/api/browse?path=" + encodeURIComponent(path));
+    const data = await resp.json();
+    _browsePath = data.path || path;
+    document.getElementById("browse-crumb").textContent = data.label || _browsePath || "(root)";
+
+    let html = "";
+    if (data.parent !== null && data.parent !== undefined) {
+      html += `<div class="browse-item" onclick="browseTo(${JSON.stringify(data.parent)})">📁 ..</div>`;
+    }
+    (data.dirs || []).forEach(dir => {
+      const name = dir.replace(/\\/g, "/").split("/").filter(Boolean).pop() || dir;
+      html += `<div class="browse-item" onclick="browseTo(${JSON.stringify(dir)})">📁 ${name}</div>`;
+    });
+    if (data.error) html += `<div class="browse-item" style="color:#ef4444">${data.error}</div>`;
+    document.getElementById("browse-list").innerHTML = html || '<div class="browse-item" style="color:#52525b">(empty)</div>';
+  } catch(e) {
+    document.getElementById("browse-list").innerHTML = `<div class="browse-item" style="color:#ef4444">Error: ${e}</div>`;
+  }
 }
 async function deleteRoom(e, room_id) {
   e.stopPropagation();
