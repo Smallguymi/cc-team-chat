@@ -19,6 +19,7 @@ import asyncio
 import datetime
 import json
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
@@ -29,7 +30,15 @@ from fastapi.staticfiles import StaticFiles
 import agents
 from agents import ManagerAgent, WorkerAgent, WORKER_SPECIES
 
-app = FastAPI(title="CC Team Chat")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global manager
+    manager = ManagerAgent(broadcast_fn=broadcast)
+    yield
+
+
+app = FastAPI(title="CC Team Chat", lifespan=lifespan)
 
 BASE_DIR   = Path(__file__).parent
 STATIC_DIR = BASE_DIR / "static"
@@ -190,15 +199,6 @@ async def spawn_worker(
     worker_tasks[worker_id] = task
     task.add_done_callback(lambda t: worker_tasks.pop(worker_id, None))
 
-
-# ---------------------------------------------------------------------------
-# Startup
-# ---------------------------------------------------------------------------
-
-@app.on_event("startup")
-async def on_startup():
-    global manager
-    manager = ManagerAgent(broadcast_fn=broadcast)
 
 # ---------------------------------------------------------------------------
 # Routes
