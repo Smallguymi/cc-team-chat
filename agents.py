@@ -12,8 +12,15 @@ from llm_provider import make_provider, ToolCall
 from skills import execute as execute_skill, get_tool_schema
 
 BASE_DIR  = Path(__file__).parent
-CLAUDE_MD = BASE_DIR / "CLAUDE.md"
-TASKS_DIR = BASE_DIR / "tasks"
+CLAUDE_MD = BASE_DIR / "CLAUDE.md"   # overridden by set_data_dir()
+TASKS_DIR = BASE_DIR / "tasks"       # overridden by set_data_dir()
+
+
+def set_data_dir(data_dir: Path) -> None:
+    """Point agents at a project data directory. Call before any agents are created."""
+    global CLAUDE_MD, TASKS_DIR
+    CLAUDE_MD = data_dir / "CLAUDE.md"
+    TASKS_DIR = data_dir / "tasks"
 
 
 def _load_claude_md() -> str:

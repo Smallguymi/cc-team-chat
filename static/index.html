@@ -246,7 +246,7 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
   <nav id="sidebar">
     <div id="sidebar-header">
       <h1>CC Team Chat</h1>
-      <p>Multi-agent workspace</p>
+      <p id="project-label" title="" style="cursor:default">loading project…</p>
     </div>
     <div id="sidebar-divider"></div>
 
@@ -487,6 +487,7 @@ window.addEventListener("load", () => {
   if (!settings.api_key) openKeyModal();
   connect();
   loadSpecies();
+  loadProject();
 });
 
 // ── WebSocket ──────────────────────────────────────────────────────────────
@@ -825,6 +826,17 @@ function stopAgent(e, wid) {
 function stopAll() {
   if (ws && ws.readyState === WebSocket.OPEN)
     ws.send(JSON.stringify({ type: "stop_all" }));
+}
+
+// ── Project ──────────────────────────────────────────────────────────────────
+async function loadProject() {
+  try {
+    const resp = await fetch('/api/project');
+    const data = await resp.json();
+    const el = document.getElementById('project-label');
+    el.textContent = '📁 ' + data.name;
+    el.title = data.path;
+  } catch(e) { /* ignore */ }
 }
 
 // ── Species ─────────────────────────────────────────────────────────────────

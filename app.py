@@ -1,6 +1,10 @@
 """
 CC Team Chat — FastAPI server.
 
+Usage:
+  python app.py                         # uses ./userdata as project dir
+  python app.py --project /path/to/dir  # use any folder as project
+
 WebSocket message protocol (client → server):
   { "type": "user_message",  "content": "...", "provider": {...} }
   { "type": "worker_message","worker_id": "...", "content": "...", "provider": {...} }
@@ -10,6 +14,7 @@ provider object:
   { "provider": "anthropic"|"openai_compat", "api_key": "...", "model": "...", "base_url": "..." }
 """
 
+import argparse
 import asyncio
 import datetime
 import json
@@ -21,6 +26,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+import agents
 from agents import ManagerAgent, WorkerAgent, WORKER_SPECIES
 
 app = FastAPI(title="CC Team Chat")
@@ -30,16 +36,47 @@ STATIC_DIR = BASE_DIR / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # ---------------------------------------------------------------------------
+# Project data directory (set by configure() before startup)
+# ---------------------------------------------------------------------------
+
+DATA_DIR: Path = BASE_DIR / "userdata"   # default — overwritten by configure()
+LOG_FILE: Path | None = None
+_stream_acc: dict[str, str] = {}
+
+
+def configure(data_dir: Path) -> None:
+    """Set up all paths and direct agents to the chosen project folder."""
+    global DATA_DIR, LOG_FILE
+
+    DATA_DIR = data_dir.resolve()
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Ensure a CLAUDE.md exists in the project dir
+    claude_md = DATA_DIR / "CLAUDE.md"
+    if not claude_md.exists():
+        claude_md.write_text(
+            "# Project Context\n\n"
+            "No project has been defined yet. "
+            "Wait for the user to tell you what to work on.\n",
+            encoding="utf-8",
+        )
+
+    log_dir = DATA_DIR / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    LOG_FILE = log_dir / f"session_{ts}.txt"
+
+    agents.set_data_dir(DATA_DIR)
+    print(f"  Project : {DATA_DIR}")
+
+
+# ---------------------------------------------------------------------------
 # Session log
 # ---------------------------------------------------------------------------
 
-LOG_DIR = BASE_DIR / "logs"
-LOG_DIR.mkdir(exist_ok=True)
-_session_ts  = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
-LOG_FILE     = LOG_DIR / f"session_{_session_ts}.txt"
-_stream_acc: dict[str, str] = {}   # sender → accumulated stream text
-
 def _log(message: dict):
+    if LOG_FILE is None:
+        return
     ts  = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     typ = message.get("type", "")
 
@@ -77,11 +114,11 @@ def _log(message: dict):
 # Global state
 # ---------------------------------------------------------------------------
 
-connections:    list[WebSocket]        = []
-manager:        ManagerAgent | None    = None
-workers:        dict[str, WorkerAgent] = {}
-worker_counter: int                    = 0
-worker_tasks:   dict[str, asyncio.Task] = {}   # worker_id → running task
+connections:    list[WebSocket]         = []
+manager:        ManagerAgent | None     = None
+workers:        dict[str, WorkerAgent]  = {}
+worker_counter: int                     = 0
+worker_tasks:   dict[str, asyncio.Task] = {}
 manager_task:   asyncio.Task | None     = None
 
 WORKER_COLORS = [
@@ -153,6 +190,7 @@ async def spawn_worker(
     worker_tasks[worker_id] = task
     task.add_done_callback(lambda t: worker_tasks.pop(worker_id, None))
 
+
 # ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
@@ -174,6 +212,14 @@ async def root():
     )
 
 
+@app.get("/api/project")
+async def get_project():
+    return {
+        "name": DATA_DIR.name,
+        "path": str(DATA_DIR),
+    }
+
+
 @app.get("/api/species")
 async def get_species():
     return {
@@ -189,7 +235,7 @@ async def get_species():
 @app.post("/shutdown")
 async def shutdown():
     async def _kill():
-        await asyncio.sleep(0.5)   # let the response reach the browser first
+        await asyncio.sleep(0.5)
         os._exit(0)
     asyncio.create_task(_kill())
     return {"status": "shutting down"}
@@ -294,4 +340,17 @@ async def ws_endpoint(ws: WebSocket):
 
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)
+    parser = argparse.ArgumentParser(description="CC Team Chat")
+    parser.add_argument(
+        "--project",
+        default="userdata",
+        help="Path to project data directory (default: ./userdata)",
+    )
+    args = parser.parse_args()
+
+    data_dir = Path(args.project)
+    if not data_dir.is_absolute():
+        data_dir = BASE_DIR / data_dir
+
+    configure(data_dir)
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=False)

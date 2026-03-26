@@ -1,4 +1,7 @@
-# Runtime files
+# Project data — portable, not part of the app
+userdata/
+
+# Legacy paths (pre-userdata layout)
 logs/
 tasks/active/
 tasks/done/
