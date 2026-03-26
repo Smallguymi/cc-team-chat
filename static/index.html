@@ -65,6 +65,25 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
 .sidebar-btn.danger { border-color: #7f1d1d; color: #ef4444; }
 .sidebar-btn.danger:hover { background: #2d0a0a; color: #f87171; }
 
+/* Room list */
+#rooms-section { padding: 2px 6px 4px; }
+.room-item {
+  display: flex; align-items: center; gap: 7px; padding: 5px 10px;
+  border-radius: 7px; cursor: pointer; font-size: 12px; color: #71717a;
+  transition: background .12s; margin-bottom: 1px;
+}
+.room-item:hover  { background: #1a1d2e; color: #e4e4e7; }
+.room-item.active { background: #1e2440; color: #e4e4e7; }
+.room-dot { width: 7px; height: 7px; border-radius: 50%; background: #3f3f46; flex-shrink: 0; transition: background .15s; }
+.room-dot.active { background: #6b8af0; }
+.room-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.room-del {
+  opacity: 0; font-size: 14px; background: transparent; border: none;
+  color: #71717a; cursor: pointer; padding: 0 2px; flex-shrink: 0; line-height: 1;
+}
+.room-item:hover .room-del { opacity: 1; }
+.room-del:hover { color: #ef4444; }
+
 /* Stop button on participant rows */
 .stop-btn {
   margin-left: auto; flex-shrink: 0; width: 20px; height: 20px;
@@ -246,7 +265,17 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
   <nav id="sidebar">
     <div id="sidebar-header">
       <h1>CC Team Chat</h1>
-      <p id="project-label" title="" style="cursor:default">loading project…</p>
+      <p id="project-label" title="" style="cursor:default">loading…</p>
+    </div>
+
+    <div id="rooms-section">
+      <div class="section-label" style="display:flex;justify-content:space-between;align-items:center;padding-right:8px">
+        <span>Group Chats</span>
+        <button onclick="openNewRoomModal()" title="New group chat"
+          style="background:transparent;border:none;color:#3f3f46;cursor:pointer;font-size:18px;padding:0;line-height:1"
+          onmouseover="this.style.color='#6b8af0'" onmouseout="this.style.color='#3f3f46'">+</button>
+      </div>
+      <div id="rooms-list"></div>
     </div>
     <div id="sidebar-divider"></div>
 
@@ -397,6 +426,25 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
   </div>
 </div>
 
+<!-- ── New Group Chat modal ── -->
+<div class="overlay" id="new-room-overlay">
+  <div class="modal" style="width:420px">
+    <h3>New Group Chat</h3>
+    <div>
+      <label>Name</label>
+      <input id="room-name-input" placeholder="e.g. Trading Bot" />
+    </div>
+    <div style="margin-top:10px">
+      <label>Project folder <span style="color:#52525b">(optional — blank = auto-create)</span></label>
+      <input id="room-path-input" placeholder="e.g. C:\projects\trading_bot" />
+    </div>
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeNewRoomModal()">Cancel</button>
+      <button class="btn-primary" onclick="doCreateRoom()">Create</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ── Provider definitions ───────────────────────────────────────────────────
 const PROVIDERS = {
@@ -440,6 +488,8 @@ const workers = {};
 let currentTarget = "manager";
 let streamBufs = {};
 let ws;
+let currentRoomId = null;
+let roomsList = [];
 
 // Load saved settings
 let settings = JSON.parse(localStorage.getItem("cc_settings") || "{}");
@@ -482,19 +532,107 @@ function showThread(targetId) {
 // ── Boot ───────────────────────────────────────────────────────────────────
 window.addEventListener("load", () => {
   showThread("manager");
-  sysMsg("Team chat started — select a participant and send a message");
   updateSettingsBtn();
   if (!settings.api_key) openKeyModal();
-  connect();
   loadSpecies();
-  loadProject();
+  loadRooms();  // loads rooms then connects to the first one
 });
 
+// ── Rooms ──────────────────────────────────────────────────────────────────
+async function loadRooms() {
+  try {
+    const resp = await fetch("/api/rooms");
+    roomsList  = await resp.json();
+    renderRooms();
+    if (roomsList.length > 0) switchRoom(roomsList[0].room_id, true);
+  } catch(e) { console.error("loadRooms failed", e); }
+}
+
+function renderRooms() {
+  document.getElementById("rooms-list").innerHTML = roomsList.map(r => `
+    <div class="room-item ${r.room_id === currentRoomId ? "active" : ""}"
+         onclick="switchRoom('${r.room_id}')" title="${r.path}">
+      <span class="room-dot ${r.room_id === currentRoomId ? "active" : ""}"></span>
+      <span class="room-name">${r.name}</span>
+      ${r.room_id !== "default"
+        ? `<button class="room-del" onclick="deleteRoom(event,'${r.room_id}')" title="Remove chat">×</button>`
+        : ""}
+    </div>`).join("");
+}
+
+function switchRoom(room_id, isInit = false) {
+  if (room_id === currentRoomId && !isInit) return;
+  currentRoomId = room_id;
+  clearRoomState();
+  connect(room_id);
+  renderRooms();
+}
+
+function clearRoomState() {
+  Object.keys(streamBufs).forEach(s => flushStream(s));
+  streamBufs = {};
+  Object.keys(workers).forEach(k => delete workers[k]);
+  document.getElementById("worker-list").innerHTML = "";
+  // Remove worker threads, keep manager thread
+  document.querySelectorAll(".thread").forEach(t => {
+    if (t.id !== "thread-manager") t.remove();
+  });
+  const mt = document.getElementById("thread-manager");
+  if (mt) mt.innerHTML = "";
+  currentTarget = "manager";
+  showThread("manager");
+  document.querySelectorAll(".participant").forEach(p => p.classList.remove("active"));
+  document.getElementById("p-manager")?.classList.add("active");
+  document.getElementById("header-title").textContent = "Manager CC";
+  document.getElementById("header-avatar").style.background = MANAGER_COLOR;
+  document.getElementById("header-avatar").textContent = "M";
+  document.getElementById("header-sub").textContent = "Orchestrator · reads CLAUDE.md · spawns workers";
+  document.getElementById("msg-input").placeholder = "Message Manager CC…";
+}
+
+function openNewRoomModal() {
+  document.getElementById("new-room-overlay").classList.add("open");
+  setTimeout(() => document.getElementById("room-name-input").focus(), 50);
+}
+function closeNewRoomModal() {
+  document.getElementById("new-room-overlay").classList.remove("open");
+  document.getElementById("room-name-input").value = "";
+  document.getElementById("room-path-input").value = "";
+}
+async function doCreateRoom() {
+  const name = document.getElementById("room-name-input").value.trim();
+  const path = document.getElementById("room-path-input").value.trim();
+  if (!name) { alert("Enter a name for the group chat."); return; }
+  try {
+    const resp = await fetch("/api/rooms", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, path }),
+    });
+    const room = await resp.json();
+    roomsList.push(room);
+    closeNewRoomModal();
+    switchRoom(room.room_id);
+  } catch(e) { alert("Failed to create room: " + e); }
+}
+async function deleteRoom(e, room_id) {
+  e.stopPropagation();
+  if (!confirm("Remove this group chat?")) return;
+  await fetch(`/api/rooms/${room_id}`, { method: "DELETE" });
+  roomsList = roomsList.filter(r => r.room_id !== room_id);
+  if (currentRoomId === room_id) switchRoom("default");
+  renderRooms();
+}
+
 // ── WebSocket ──────────────────────────────────────────────────────────────
-function connect() {
-  ws = new WebSocket(`ws://${location.host}/ws`);
-  ws.onopen  = () => sysMsg("Connected");
-  ws.onclose = () => { sysMsg("Connection lost — reconnecting…"); setTimeout(connect, 3000); };
+function connect(room_id) {
+  if (ws) { try { ws.close(); } catch(_) {} }
+  ws = new WebSocket(`ws://${location.host}/ws/${room_id}`);
+  ws.onopen  = () => {};
+  ws.onclose = () => {
+    sysMsg("Connection lost — reconnecting…");
+    setTimeout(() => connect(currentRoomId), 3000);
+  };
   ws.onmessage = e => handle(JSON.parse(e.data));
 }
 
@@ -503,6 +641,13 @@ function handle(m) {
 
     case "init":
       (m.workers || []).forEach(addWorker);
+      if (m.room_name) {
+        const pl = document.getElementById("project-label");
+        pl.textContent = "📁 " + m.room_name;
+        pl.title = m.project_path || "";
+      }
+      sysMsg("Connected — " + (m.room_name || m.room_id));
+      renderRooms();
       break;
 
     case "message":
@@ -826,17 +971,6 @@ function stopAgent(e, wid) {
 function stopAll() {
   if (ws && ws.readyState === WebSocket.OPEN)
     ws.send(JSON.stringify({ type: "stop_all" }));
-}
-
-// ── Project ──────────────────────────────────────────────────────────────────
-async function loadProject() {
-  try {
-    const resp = await fetch('/api/project');
-    const data = await resp.json();
-    const el = document.getElementById('project-label');
-    el.textContent = '📁 ' + data.name;
-    el.title = data.path;
-  } catch(e) { /* ignore */ }
 }
 
 // ── Species ─────────────────────────────────────────────────────────────────

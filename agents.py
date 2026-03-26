@@ -8,35 +8,20 @@ import json
 from pathlib import Path
 from typing import Callable
 
-from llm_provider import make_provider, ToolCall
+from llm_provider import make_provider
 from skills import execute as execute_skill, get_tool_schema
 
-BASE_DIR  = Path(__file__).parent
-CLAUDE_MD = BASE_DIR / "CLAUDE.md"   # overridden by set_data_dir()
-TASKS_DIR = BASE_DIR / "tasks"       # overridden by set_data_dir()
+BASE_DIR = Path(__file__).parent
 
 
-def set_data_dir(data_dir: Path) -> None:
-    """Point agents at a project data directory. Call before any agents are created."""
-    global CLAUDE_MD, TASKS_DIR
-    CLAUDE_MD = data_dir / "CLAUDE.md"
-    TASKS_DIR = data_dir / "tasks"
-
-
-def _load_claude_md() -> str:
-    if CLAUDE_MD.exists():
-        return CLAUDE_MD.read_text(encoding="utf-8")
-    return "No CLAUDE.md found. Ask the user what project we are working on."
-
-
-def _save_task_brief(task_id: str, task_title: str, brief: str):
-    d = TASKS_DIR / "active"
+def _save_task_brief(data_dir: Path, task_id: str, task_title: str, brief: str):
+    d = data_dir / "tasks" / "active"
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{task_id}.md").write_text(f"# {task_title}\n\n{brief}", encoding="utf-8")
 
 
-def _save_task_result(task_id: str, task_title: str, result: str):
-    d = TASKS_DIR / "done"
+def _save_task_result(data_dir: Path, task_id: str, task_title: str, result: str):
+    d = data_dir / "tasks" / "done"
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{task_id}_result.md").write_text(
         f"# {task_title} — Result\n\n{result}", encoding="utf-8"
@@ -45,8 +30,6 @@ def _save_task_result(task_id: str, task_title: str, result: str):
 
 # ---------------------------------------------------------------------------
 # Worker Species
-# Each species defines a role and the set of skills the worker is allowed to use.
-# Skills map to tool names in skills.py — add new skills there, then reference here.
 # ---------------------------------------------------------------------------
 
 WORKER_SPECIES: dict[str, dict] = {
@@ -97,7 +80,7 @@ YOUR ROLE:
 - Decide whether to handle it directly or delegate to one or more Worker CCs
 - For complex requests with distinct parts, spawn multiple workers in parallel (one per subtask)
 - For simple requests, a single worker or a direct answer is fine
-- After workers complete, summarise their results and report back to the user
+- After ALL workers complete, summarise their results and report back to the user
 
 WORKER SPECIES available to you:
 {species_list}
@@ -106,7 +89,7 @@ SPAWNING RULES:
 - Choose the species that best matches each subtask
 - Worker briefs must be 100% self-contained — workers have NO other context beyond what you write
 - Only spawn workers when the user explicitly asks you to do something
-- After receiving worker results, summarise for the user — do NOT auto-spawn follow-up workers
+- After all workers finish, you will be triggered automatically — summarise their results then
 
 CONTEXT (updated each session):
 {claude_md}
@@ -143,10 +126,18 @@ SPAWN_WORKER_TOOL = {
 
 
 class ManagerAgent:
-    def __init__(self, broadcast_fn: Callable):
+    def __init__(self, broadcast_fn: Callable, data_dir: Path):
         self.history: list[dict] = []
         self.broadcast = broadcast_fn
-        self._summarizing: bool = False   # True while responding to a worker result
+        self.data_dir  = data_dir
+        self._summarizing: bool  = False
+        self._pending_workers: set[str] = set()   # worker_ids not yet complete
+
+    def _load_claude_md(self) -> str:
+        claude_md = self.data_dir / "CLAUDE.md"
+        if claude_md.exists():
+            return claude_md.read_text(encoding="utf-8")
+        return "No CLAUDE.md found. Ask the user what project we are working on."
 
     def _system(self) -> str:
         species_list = "\n".join(
@@ -154,7 +145,10 @@ class ManagerAgent:
             + (f"  [skills: {', '.join(s['skills'])}]" if s["skills"] else "  [no tools]")
             for sid, s in WORKER_SPECIES.items()
         )
-        return MANAGER_SYSTEM.format(claude_md=_load_claude_md(), species_list=species_list)
+        return MANAGER_SYSTEM.format(
+            claude_md=self._load_claude_md(),
+            species_list=species_list,
+        )
 
     async def process_message(
         self,
@@ -173,22 +167,26 @@ class ManagerAgent:
         provider_cfg: dict,
         spawn_worker_fn: Callable,
     ):
-        """Append worker result then trigger a summary turn.
-        spawn_worker tool is disabled during this turn to prevent loops."""
+        """Append worker result. Trigger summary only when ALL pending workers finish."""
         note = (
             f"[Worker {worker_id} completed: '{task_title}']\n\n"
             f"Result:\n{result[:1500]}"
         )
         self.history.append({"role": "user", "content": note})
-        self._summarizing = True
-        try:
-            await self._run_turn(provider_cfg, spawn_worker_fn)
-        finally:
-            self._summarizing = False
+        self._pending_workers.discard(worker_id)
+
+        if not self._pending_workers:
+            # All workers done — now summarise
+            self._summarizing = True
+            try:
+                await self._run_turn(provider_cfg, spawn_worker_fn)
+            finally:
+                self._summarizing = False
+        # else: still waiting for other workers in this batch
 
     async def _run_turn(self, provider_cfg: dict, spawn_worker_fn: Callable):
         provider = make_provider(provider_cfg)
-        # Disable spawn_worker while summarising a worker result — prevents infinite loops
+        # Disable spawn_worker while summarising — prevents infinite loops
         tools = [] if self._summarizing else [SPAWN_WORKER_TOOL]
 
         while True:
@@ -219,11 +217,12 @@ class ManagerAgent:
                         task_title = tc.input.get("task_title", "Untitled")
                         task_brief = tc.input.get("task_brief", "")
                         species    = tc.input.get("species", "generalist")
-                        _save_task_brief(task_id, task_title, task_brief)
-                        await spawn_worker_fn(
+                        _save_task_brief(self.data_dir, task_id, task_title, task_brief)
+                        worker_id = await spawn_worker_fn(
                             task_id, task_title, task_brief, provider_cfg,
                             species=species,
                         )
+                        self._pending_workers.add(worker_id)   # track this worker
                         self.history.append({
                             "role": "tool",
                             "tool_call_id": tc.id,
@@ -266,7 +265,8 @@ class WorkerAgent:
         task_title: str,
         task_brief: str,
         broadcast_fn: Callable,
-        permission_mode: str = "ask",   # "ask" | "full"
+        data_dir: Path,
+        permission_mode: str = "ask",
         species: str = "generalist",
     ):
         self.worker_id       = worker_id
@@ -274,14 +274,14 @@ class WorkerAgent:
         self.task_title      = task_title
         self.task_brief      = task_brief
         self.broadcast       = broadcast_fn
+        self.data_dir        = data_dir
         self.permission_mode = permission_mode
         self.species         = species
-        self._history: list[dict] = []
-        self._perm_event:  asyncio.Event | None = None
-        self._perm_answer: str | None           = None
+        self._history: list[dict]       = []
+        self._perm_event: asyncio.Event | None = None
+        self._perm_answer: str | None          = None
 
     def resolve_permission(self, answer: str):
-        """Called by the server when the user responds to a permission request."""
         self._perm_answer = answer
         if self._perm_event:
             self._perm_event.set()
@@ -290,17 +290,11 @@ class WorkerAgent:
         return WORKER_SPECIES.get(self.species, WORKER_SPECIES["generalist"])
 
     def _get_tools(self) -> list[dict]:
-        """Return tool schemas for this worker's species."""
-        schemas = []
-        for skill_name in self._species_cfg()["skills"]:
-            schema = get_tool_schema(skill_name)
-            if schema:
-                schemas.append(schema)
-        return schemas
+        return [s for skill_name in self._species_cfg()["skills"]
+                if (s := get_tool_schema(skill_name))]
 
     def _save_memory(self):
-        """Write resumption file so a crashed worker can be re-briefed."""
-        d = TASKS_DIR / "active"
+        d = self.data_dir / "tasks" / "active"
         d.mkdir(parents=True, exist_ok=True)
         path = d / f"{self.task_id}_memory.txt"
         lines = [
@@ -316,10 +310,7 @@ class WorkerAgent:
             role    = msg.get("role", "")
             content = msg.get("content") or msg.get("text", "")
             lines.append(f"[{role.upper()}]\n{content}\n\n")
-        lines.append(
-            "---\n"
-            "If resuming after a crash: read the history above, then continue the task.\n"
-        )
+        lines.append("---\nIf resuming after a crash: read the history above, then continue.\n")
         path.write_text("".join(lines), encoding="utf-8")
 
     def _system(self) -> str:
@@ -337,7 +328,7 @@ class WorkerAgent:
         return "Worker — " + (s[:25] + "…" if len(s) > 25 else s)
 
     async def _run_tool_loop(self, provider) -> str:
-        """Run LLM + tool-call loop until a final text response. Returns final text."""
+        """Run LLM + tool-call loop until final text. Returns final text."""
         tools = self._get_tools()
 
         while True:
@@ -362,7 +353,6 @@ class WorkerAgent:
                     ],
                 })
                 for tc in result.tool_calls:
-                    # Show the tool call in the chat
                     preview = json.dumps(tc.input)
                     if len(preview) > 120:
                         preview = preview[:117] + "…"
@@ -420,7 +410,7 @@ class WorkerAgent:
                 })
                 return
 
-        _save_task_result(self.task_id, self.task_title, final_text)
+        _save_task_result(self.data_dir, self.task_id, self.task_title, final_text)
         await on_complete(self.worker_id, self.task_title, final_text)
 
     async def process_message(self, text: str, provider_cfg: dict):
