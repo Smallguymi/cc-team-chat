@@ -21,7 +21,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from agents import ManagerAgent, WorkerAgent
+from agents import ManagerAgent, WorkerAgent, WORKER_SPECIES
 
 app = FastAPI(title="CC Team Chat")
 
@@ -109,12 +109,16 @@ async def broadcast(message: dict):
 async def spawn_worker(
     task_id: str, task_title: str, task_brief: str, provider_cfg: dict,
     permission_mode: str = "ask",
+    species: str = "generalist",
 ):
     global worker_counter
     worker_counter += 1
     worker_id = f"worker_{worker_counter}"
     color     = WORKER_COLORS[(worker_counter - 1) % len(WORKER_COLORS)]
     label     = "Worker — " + (task_title[:25] + "…" if len(task_title) > 25 else task_title)
+
+    species_cfg  = WORKER_SPECIES.get(species, WORKER_SPECIES["generalist"])
+    species_name = species_cfg["name"]
 
     worker = WorkerAgent(
         worker_id=worker_id,
@@ -123,6 +127,7 @@ async def spawn_worker(
         task_brief=task_brief,
         broadcast_fn=broadcast,
         permission_mode=permission_mode,
+        species=species,
     )
     workers[worker_id] = worker
 
@@ -134,6 +139,8 @@ async def spawn_worker(
         "color": color,
         "label": label,
         "permission_mode": permission_mode,
+        "species": species,
+        "species_name": species_name,
     })
 
     async def on_complete(wid: str, title: str, result: str):
@@ -165,6 +172,18 @@ async def root():
         str(STATIC_DIR / "index.html"),
         headers={"Cache-Control": "no-store"},
     )
+
+
+@app.get("/api/species")
+async def get_species():
+    return {
+        sid: {
+            "name":        s["name"],
+            "description": s["description"],
+            "skills":      s["skills"],
+        }
+        for sid, s in WORKER_SPECIES.items()
+    }
 
 
 @app.post("/shutdown")
@@ -238,9 +257,11 @@ async def ws_endpoint(ws: WebSocket):
                 task_brief      = msg.get("task_brief", "No brief provided.")
                 task_id         = msg.get("task_id", f"manual_{worker_counter + 1:03d}")
                 permission_mode = msg.get("permission_mode", "ask")
+                species         = msg.get("species", "generalist")
                 if provider_cfg.get("api_key"):
                     asyncio.create_task(
-                        spawn_worker(task_id, task_title, task_brief, provider_cfg, permission_mode)
+                        spawn_worker(task_id, task_title, task_brief, provider_cfg,
+                                     permission_mode, species)
                     )
 
             elif msg["type"] == "permission_response":

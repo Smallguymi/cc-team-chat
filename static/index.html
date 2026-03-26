@@ -373,6 +373,13 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
       <textarea id="spawn-brief" placeholder="Workers have NO other context. Be complete."></textarea>
     </div>
     <div>
+      <label>Species</label>
+      <select id="spawn-species" onchange="onSpeciesChange()"
+        style="width:100%;margin-top:6px;background:#18181b;color:#e4e4e7;border:1px solid #3f3f46;border-radius:6px;padding:7px 10px;font-size:13px">
+      </select>
+      <div id="spawn-species-desc" style="font-size:11px;color:#71717a;margin-top:4px"></div>
+    </div>
+    <div>
       <label>Permission mode</label>
       <div style="display:flex;gap:8px;margin-top:6px">
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:#e4e4e7">
@@ -479,6 +486,7 @@ window.addEventListener("load", () => {
   updateSettingsBtn();
   if (!settings.api_key) openKeyModal();
   connect();
+  loadSpecies();
 });
 
 // ── WebSocket ──────────────────────────────────────────────────────────────
@@ -641,12 +649,13 @@ function addWorker(w) {
   el.onclick    = () => selectTarget(w.worker_id);
 
   const shortTitle = (w.label || w.task_title || w.worker_id);
-  const modeLabel = w.permission_mode === "full" ? "🔓" : "🔐";
+  const modeLabel    = w.permission_mode === "full" ? "🔓" : "🔐";
+  const speciesLabel = w.species_name ? `<span style="font-size:10px;color:#71717a;margin-right:3px">[${w.species_name}]</span>` : "";
   el.innerHTML = `
     <div class="p-avatar" style="background:${w.color}">${w.worker_id.replace("worker_","")}</div>
     <div class="p-info">
       <div class="p-name" title="${w.task_title || ""}">${shortTitle}</div>
-      <div class="p-status" id="st-${w.worker_id}">spawning…</div>
+      <div class="p-status" id="st-${w.worker_id}">${speciesLabel}spawning…</div>
     </div>
     <span title="${w.permission_mode === 'full' ? 'Full permission' : 'Ask before completing'}" style="font-size:12px;margin-right:2px">${modeLabel}</span>
     <button class="stop-btn" onclick="stopAgent(event,'${w.worker_id}')" title="Stop">■</button>`;
@@ -818,6 +827,28 @@ function stopAll() {
     ws.send(JSON.stringify({ type: "stop_all" }));
 }
 
+// ── Species ─────────────────────────────────────────────────────────────────
+let SPECIES_DATA = {};
+async function loadSpecies() {
+  try {
+    const resp = await fetch('/api/species');
+    SPECIES_DATA = await resp.json();
+    const sel = document.getElementById('spawn-species');
+    sel.innerHTML = Object.entries(SPECIES_DATA)
+      .map(([id, s]) => `<option value="${id}">${s.name}</option>`)
+      .join('');
+    onSpeciesChange();
+  } catch(e) { console.warn('Could not load species', e); }
+}
+function onSpeciesChange() {
+  const sel  = document.getElementById('spawn-species');
+  const desc = document.getElementById('spawn-species-desc');
+  const s    = SPECIES_DATA[sel.value];
+  if (!s) { desc.textContent = ''; return; }
+  const skills = s.skills.length ? `Skills: ${s.skills.join(', ')}` : 'No external tools';
+  desc.textContent = `${s.description}  |  ${skills}`;
+}
+
 // ── Spawn modal ────────────────────────────────────────────────────────────
 function openSpawnModal() {
   document.getElementById("spawn-overlay").classList.add("open");
@@ -829,17 +860,19 @@ function closeSpawnModal() {
   document.getElementById("spawn-brief").value = "";
 }
 function doSpawn() {
-  const title = document.getElementById("spawn-title").value.trim();
-  const brief = document.getElementById("spawn-brief").value.trim();
+  const title   = document.getElementById("spawn-title").value.trim();
+  const brief   = document.getElementById("spawn-brief").value.trim();
   if (!title || !brief) { alert("Fill in both fields."); return; }
   if (!settings.api_key) { closeSpawnModal(); openKeyModal(); return; }
   const permMode = document.querySelector('input[name="perm-mode"]:checked')?.value || "ask";
+  const species  = document.getElementById("spawn-species")?.value || "generalist";
   ws.send(JSON.stringify({
     type: "spawn_worker",
     task_id: "manual_" + Date.now(),
     task_title: title,
     task_brief: brief,
     permission_mode: permMode,
+    species,
     provider: getProviderCfg(),
   }));
   closeSpawnModal();

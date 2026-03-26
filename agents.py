@@ -4,10 +4,12 @@ Uses llm_provider.py so any supported LLM backend can be plugged in.
 """
 
 import asyncio
+import json
 from pathlib import Path
-from typing import Callable, Awaitable
+from typing import Callable
 
 from llm_provider import make_provider, ToolCall
+from skills import execute as execute_skill, get_tool_schema
 
 BASE_DIR  = Path(__file__).parent
 CLAUDE_MD = BASE_DIR / "CLAUDE.md"
@@ -35,27 +37,69 @@ def _save_task_result(task_id: str, task_title: str, result: str):
 
 
 # ---------------------------------------------------------------------------
+# Worker Species
+# Each species defines a role and the set of skills the worker is allowed to use.
+# Skills map to tool names in skills.py — add new skills there, then reference here.
+# ---------------------------------------------------------------------------
+
+WORKER_SPECIES: dict[str, dict] = {
+    "generalist": {
+        "name": "Generalist",
+        "description": "Handles any general task using knowledge alone. No external tools.",
+        "role": "You are a generalist assistant. Answer thoroughly using your own knowledge.",
+        "skills": [],
+    },
+    "researcher": {
+        "name": "Researcher",
+        "description": "Finds current information by searching the web.",
+        "role": (
+            "You are a research specialist. Use web_search to find up-to-date information. "
+            "Always cite the source URLs in your result."
+        ),
+        "skills": ["web_search"],
+    },
+    "file_editor": {
+        "name": "File Editor",
+        "description": "Reads, writes, and organises files on the local filesystem.",
+        "role": (
+            "You are a file management specialist. Use read_file, write_file, and "
+            "list_directory to work with the filesystem. Always confirm what you wrote."
+        ),
+        "skills": ["read_file", "write_file", "list_directory"],
+    },
+    "analyst": {
+        "name": "Analyst",
+        "description": "Reads files and analyses or summarises their contents.",
+        "role": (
+            "You are a data analyst. Use read_file and list_directory to inspect source "
+            "material, then produce a clear analysis or summary."
+        ),
+        "skills": ["read_file", "list_directory"],
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # Manager Agent
 # ---------------------------------------------------------------------------
 
 MANAGER_SYSTEM = """You are Manager CC — an orchestrator in a multi-agent team chat.
 
 YOUR ROLE:
-- Understand what the user needs, then decompose it into multiple small, atomic subtasks
-- Spawn each subtask as a separate Worker CC using the spawn_worker tool
-- After all workers complete, summarise their results and report back to the user
+- Understand what the user needs
+- Decide whether to handle it directly or delegate to one or more Worker CCs
+- For complex requests with distinct parts, spawn multiple workers in parallel (one per subtask)
+- For simple requests, a single worker or a direct answer is fine
+- After workers complete, summarise their results and report back to the user
 
-TASK DECOMPOSITION — MANDATORY:
-- NEVER give one worker the entire job. Always split into at least 2-3 parallel subtasks when the request has distinct parts.
-- Each worker must have ONE specific, narrow responsibility (e.g. "Write the login function", not "Build the app").
-- Spawn all subtasks in the same turn using multiple spawn_worker calls before doing anything else.
-- Workers are completely isolated — each brief must contain ALL context they need, with zero assumptions.
+WORKER SPECIES available to you:
+{species_list}
 
-RULES:
-- Only act when the user explicitly asks you to do something
-- When worker results arrive, summarise them clearly for the user — do NOT spawn follow-up workers unless the user asks
-- Do not invent tasks or assume any project context unless the user tells you
-- Be concise and direct
+SPAWNING RULES:
+- Choose the species that best matches each subtask
+- Worker briefs must be 100% self-contained — workers have NO other context beyond what you write
+- Only spawn workers when the user explicitly asks you to do something
+- After receiving worker results, summarise for the user — do NOT auto-spawn follow-up workers
 
 CONTEXT (updated each session):
 {claude_md}
@@ -64,7 +108,8 @@ CONTEXT (updated each session):
 SPAWN_WORKER_TOOL = {
     "name": "spawn_worker",
     "description": (
-        "Spawn a new Worker CC with a specific, atomic, self-contained task. "
+        "Spawn a Worker CC for a specific subtask. "
+        "Choose the species that best matches the work. "
         "The worker has NO context beyond what you write in task_brief."
     ),
     "input_schema": {
@@ -79,8 +124,13 @@ SPAWN_WORKER_TOOL = {
                     "acceptance criteria, and constraints the worker needs."
                 ),
             },
+            "species": {
+                "type": "string",
+                "description": "Worker species to use. Must be one of the available species IDs.",
+                "enum": list(WORKER_SPECIES.keys()),
+            },
         },
-        "required": ["task_id", "task_title", "task_brief"],
+        "required": ["task_id", "task_title", "task_brief", "species"],
     },
 }
 
@@ -92,7 +142,12 @@ class ManagerAgent:
         self._summarizing: bool = False   # True while responding to a worker result
 
     def _system(self) -> str:
-        return MANAGER_SYSTEM.format(claude_md=_load_claude_md())
+        species_list = "\n".join(
+            f"  - {sid} ({s['name']}): {s['description']}"
+            + (f"  [skills: {', '.join(s['skills'])}]" if s["skills"] else "  [no tools]")
+            for sid, s in WORKER_SPECIES.items()
+        )
+        return MANAGER_SYSTEM.format(claude_md=_load_claude_md(), species_list=species_list)
 
     async def process_message(
         self,
@@ -142,7 +197,6 @@ class ManagerAgent:
             await self.broadcast({"type": "stream_end", "sender": "manager"})
 
             if result.tool_calls:
-                # Append assistant turn with tool calls
                 self.history.append({
                     "role": "assistant",
                     "text": result.text,
@@ -152,22 +206,24 @@ class ManagerAgent:
                     ],
                 })
 
-                # Execute each tool and collect results
                 for tc in result.tool_calls:
                     if tc.name == "spawn_worker":
                         task_id    = tc.input.get("task_id", "task_unknown")
                         task_title = tc.input.get("task_title", "Untitled")
                         task_brief = tc.input.get("task_brief", "")
+                        species    = tc.input.get("species", "generalist")
                         _save_task_brief(task_id, task_title, task_brief)
-                        await spawn_worker_fn(task_id, task_title, task_brief, provider_cfg)
+                        await spawn_worker_fn(
+                            task_id, task_title, task_brief, provider_cfg,
+                            species=species,
+                        )
                         self.history.append({
                             "role": "tool",
                             "tool_call_id": tc.id,
                             "name": tc.name,
-                            "content": f"Worker spawned for '{task_title}' (id: {task_id}).",
+                            "content": f"Worker spawned for '{task_title}' (id: {task_id}, species: {species}).",
                         })
             else:
-                # No tool calls — turn complete
                 self.history.append({"role": "assistant", "content": result.text})
                 break
 
@@ -177,6 +233,9 @@ class ManagerAgent:
 # ---------------------------------------------------------------------------
 
 WORKER_SYSTEM = """You are Worker CC — an autonomous specialist assigned ONE atomic task.
+
+SPECIES: {species_name}
+ROLE: {species_role}
 
 TASK ID: {task_id}
 TASK: {task_title}
@@ -201,6 +260,7 @@ class WorkerAgent:
         task_brief: str,
         broadcast_fn: Callable,
         permission_mode: str = "ask",   # "ask" | "full"
+        species: str = "generalist",
     ):
         self.worker_id       = worker_id
         self.task_id         = task_id
@@ -208,6 +268,7 @@ class WorkerAgent:
         self.task_brief      = task_brief
         self.broadcast       = broadcast_fn
         self.permission_mode = permission_mode
+        self.species         = species
         self._history: list[dict] = []
         self._perm_event:  asyncio.Event | None = None
         self._perm_answer: str | None           = None
@@ -218,6 +279,18 @@ class WorkerAgent:
         if self._perm_event:
             self._perm_event.set()
 
+    def _species_cfg(self) -> dict:
+        return WORKER_SPECIES.get(self.species, WORKER_SPECIES["generalist"])
+
+    def _get_tools(self) -> list[dict]:
+        """Return tool schemas for this worker's species."""
+        schemas = []
+        for skill_name in self._species_cfg()["skills"]:
+            schema = get_tool_schema(skill_name)
+            if schema:
+                schemas.append(schema)
+        return schemas
+
     def _save_memory(self):
         """Write resumption file so a crashed worker can be re-briefed."""
         d = TASKS_DIR / "active"
@@ -226,7 +299,8 @@ class WorkerAgent:
         lines = [
             f"# Worker Memory — {self.task_title}\n",
             f"Task ID : {self.task_id}\n",
-            f"Worker  : {self.worker_id}\n\n",
+            f"Worker  : {self.worker_id}\n",
+            f"Species : {self.species}\n\n",
             "## Original Brief\n\n",
             self.task_brief,
             "\n\n## Conversation History\n\n",
@@ -242,7 +316,10 @@ class WorkerAgent:
         path.write_text("".join(lines), encoding="utf-8")
 
     def _system(self) -> str:
+        cfg = self._species_cfg()
         return WORKER_SYSTEM.format(
+            species_name=cfg["name"],
+            species_role=cfg["role"],
             task_id=self.task_id,
             task_title=self.task_title,
             task_brief=self.task_brief,
@@ -251,6 +328,56 @@ class WorkerAgent:
     def _label(self) -> str:
         s = self.task_title
         return "Worker — " + (s[:25] + "…" if len(s) > 25 else s)
+
+    async def _run_tool_loop(self, provider) -> str:
+        """Run LLM + tool-call loop until a final text response. Returns final text."""
+        tools = self._get_tools()
+
+        while True:
+            async def on_delta(text: str):
+                await self.broadcast({"type": "stream_delta", "sender": self.worker_id, "content": text})
+
+            result = await provider.stream_turn(
+                messages=self._history,
+                system=self._system(),
+                tools=tools,
+                on_delta=on_delta,
+            )
+            await self.broadcast({"type": "stream_end", "sender": self.worker_id})
+
+            if result.tool_calls:
+                self._history.append({
+                    "role": "assistant",
+                    "text": result.text,
+                    "tool_calls": [
+                        {"id": tc.id, "name": tc.name, "input": tc.input}
+                        for tc in result.tool_calls
+                    ],
+                })
+                for tc in result.tool_calls:
+                    # Show the tool call in the chat
+                    preview = json.dumps(tc.input)
+                    if len(preview) > 120:
+                        preview = preview[:117] + "…"
+                    await self.broadcast({
+                        "type": "message",
+                        "sender": self.worker_id,
+                        "sender_label": self._label(),
+                        "content": f"🔧 **{tc.name}** `{preview}`",
+                        "complete": True,
+                    })
+                    tool_result = await execute_skill(tc.name, tc.input)
+                    self._history.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "name": tc.name,
+                        "content": str(tool_result),
+                    })
+                self._save_memory()
+            else:
+                self._history.append({"role": "assistant", "content": result.text})
+                self._save_memory()
+                return result.text
 
     async def start(self, provider_cfg: dict, on_complete: Callable):
         await self.broadcast({
@@ -261,34 +388,20 @@ class WorkerAgent:
             "complete": True,
         })
 
-        provider  = make_provider(provider_cfg)
-        user_msg  = {"role": "user", "content": f"Please complete your task: {self.task_title}"}
-        self._history.append(user_msg)
+        provider = make_provider(provider_cfg)
+        self._history.append({"role": "user", "content": f"Please complete your task: {self.task_title}"})
         self._save_memory()
 
-        async def on_delta(text: str):
-            await self.broadcast({"type": "stream_delta", "sender": self.worker_id, "content": text})
-
-        result = await provider.stream_turn(
-            messages=self._history,
-            system=self._system(),
-            tools=[],
-            on_delta=on_delta,
-        )
-        await self.broadcast({"type": "stream_end", "sender": self.worker_id})
-
-        self._history.append({"role": "assistant", "content": result.text})
-        self._save_memory()
+        final_text = await self._run_tool_loop(provider)
 
         if self.permission_mode == "ask":
-            # Pause and ask the user before completing
             self._perm_event  = asyncio.Event()
             self._perm_answer = None
             await self.broadcast({
                 "type":       "permission_request",
                 "worker_id":  self.worker_id,
                 "task_title": self.task_title,
-                "summary":    result.text[:600],
+                "summary":    final_text[:600],
             })
             await self._perm_event.wait()
 
@@ -299,26 +412,12 @@ class WorkerAgent:
                     "content": "Task cancelled by user.", "complete": True,
                 })
                 return
-            # "yes" or any other value → complete normally
 
-        _save_task_result(self.task_id, self.task_title, result.text)
-        await on_complete(self.worker_id, self.task_title, result.text)
+        _save_task_result(self.task_id, self.task_title, final_text)
+        await on_complete(self.worker_id, self.task_title, final_text)
 
     async def process_message(self, text: str, provider_cfg: dict):
         provider = make_provider(provider_cfg)
         self._history.append({"role": "user", "content": text})
         self._save_memory()
-
-        async def on_delta(chunk: str):
-            await self.broadcast({"type": "stream_delta", "sender": self.worker_id, "content": chunk})
-
-        result = await provider.stream_turn(
-            messages=self._history,
-            system=self._system(),
-            tools=[],
-            on_delta=on_delta,
-        )
-        await self.broadcast({"type": "stream_end", "sender": self.worker_id})
-
-        self._history.append({"role": "assistant", "content": result.text})
-        self._save_memory()
+        await self._run_tool_loop(provider)
