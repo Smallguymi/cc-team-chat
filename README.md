@@ -1,7 +1,9 @@
 # CC Team Chat
 
 A local multi-agent chat interface that lets you orchestrate a **Manager CC** and multiple **Worker CCs** — each powered by an LLM of your choice — all from a clean web UI running on your machine.
+
 PS:其实我也不知道这B程序的细节，全是CC自己写的，我就说，啊呀我好想要一个OpenClaw啊，但是我买不起token，就剩下没几天的CC会员了，你帮我整个呗，然后他就自己捉摸了两天写出来这玩意
+PS2:受不了了，这玩意进化的太快了，快把自己淘汰了，我感觉我手搓了一个cc安全级别的OpenClaw
 
 ![screenshot placeholder]
 
