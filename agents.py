@@ -3,6 +3,7 @@ CC Agent classes — Manager and Worker.
 Uses llm_provider.py so any supported LLM backend can be plugged in.
 """
 
+import asyncio
 from pathlib import Path
 from typing import Callable, Awaitable
 
@@ -40,17 +41,21 @@ def _save_task_result(task_id: str, task_title: str, result: str):
 MANAGER_SYSTEM = """You are Manager CC — an orchestrator in a multi-agent team chat.
 
 YOUR ROLE:
-- Talk with the user and understand what they need
-- Break work into small, atomic subtasks and delegate them to Worker CCs using the spawn_worker tool
-- Review worker results and report back to the user
-- Give clear feedback on worker output
+- Understand what the user needs, then decompose it into multiple small, atomic subtasks
+- Spawn each subtask as a separate Worker CC using the spawn_worker tool
+- After all workers complete, summarise their results and report back to the user
+
+TASK DECOMPOSITION — MANDATORY:
+- NEVER give one worker the entire job. Always split into at least 2-3 parallel subtasks when the request has distinct parts.
+- Each worker must have ONE specific, narrow responsibility (e.g. "Write the login function", not "Build the app").
+- Spawn all subtasks in the same turn using multiple spawn_worker calls before doing anything else.
+- Workers are completely isolated — each brief must contain ALL context they need, with zero assumptions.
 
 RULES:
-- Only spawn workers when the user explicitly asks you to do something
-- Worker briefs must be 100% self-contained — workers have NO other context beyond what you write
-- When a worker result arrives, summarise it for the user — do NOT auto-spawn more workers
+- Only act when the user explicitly asks you to do something
+- When worker results arrive, summarise them clearly for the user — do NOT spawn follow-up workers unless the user asks
 - Do not invent tasks or assume any project context unless the user tells you
-- Be concise and direct. Wait for user direction before acting.
+- Be concise and direct
 
 CONTEXT (updated each session):
 {claude_md}
@@ -84,6 +89,7 @@ class ManagerAgent:
     def __init__(self, broadcast_fn: Callable):
         self.history: list[dict] = []
         self.broadcast = broadcast_fn
+        self._summarizing: bool = False   # True while responding to a worker result
 
     def _system(self) -> str:
         return MANAGER_SYSTEM.format(claude_md=_load_claude_md())
@@ -102,17 +108,26 @@ class ManagerAgent:
         worker_id: str,
         task_title: str,
         result: str,
+        provider_cfg: dict,
+        spawn_worker_fn: Callable,
     ):
-        """Store worker result in history. Manager will include it as context
-        on the next user-initiated turn — no automatic follow-up to prevent loops."""
+        """Append worker result then trigger a summary turn.
+        spawn_worker tool is disabled during this turn to prevent loops."""
         note = (
             f"[Worker {worker_id} completed: '{task_title}']\n\n"
             f"Result:\n{result[:1500]}"
         )
         self.history.append({"role": "user", "content": note})
+        self._summarizing = True
+        try:
+            await self._run_turn(provider_cfg, spawn_worker_fn)
+        finally:
+            self._summarizing = False
 
     async def _run_turn(self, provider_cfg: dict, spawn_worker_fn: Callable):
         provider = make_provider(provider_cfg)
+        # Disable spawn_worker while summarising a worker result — prevents infinite loops
+        tools = [] if self._summarizing else [SPAWN_WORKER_TOOL]
 
         while True:
             async def on_delta(text: str):
@@ -121,7 +136,7 @@ class ManagerAgent:
             result = await provider.stream_turn(
                 messages=self.history,
                 system=self._system(),
-                tools=[SPAWN_WORKER_TOOL],
+                tools=tools,
                 on_delta=on_delta,
             )
             await self.broadcast({"type": "stream_end", "sender": "manager"})

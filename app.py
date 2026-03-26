@@ -140,7 +140,7 @@ async def spawn_worker(
         worker_tasks.pop(wid, None)
         await broadcast({"type": "worker_complete", "worker_id": wid, "task_title": title})
         if manager:
-            await manager.receive_worker_result(wid, title, result)
+            await manager.receive_worker_result(wid, title, result, provider_cfg, spawn_worker)
 
     task = asyncio.create_task(worker.start(provider_cfg, on_complete))
     worker_tasks[worker_id] = task
